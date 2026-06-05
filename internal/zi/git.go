@@ -16,6 +16,12 @@ type Git struct {
 	run    *Runner
 }
 
+type WorktreeRef struct {
+	Name   string
+	Path   string
+	Branch string
+}
+
 func NewGit(env Env, config Config, run *Runner) *Git {
 	return &Git{env: env, config: config, run: run}
 }
@@ -100,6 +106,87 @@ func (g *Git) WorktreePaths(ctx context.Context) ([]string, error) {
 		paths = append(paths, filepath.Join(root, entry.Name()))
 	}
 	return paths, nil
+}
+
+func (g *Git) Worktrees(ctx context.Context) ([]WorktreeRef, error) {
+	repo, err := g.Repo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Clean(filepath.Join(repo, g.config.WorktreeRelativePath))
+	out, err := g.run.Output(ctx, repo, "git", "worktree", "list", "--porcelain")
+	if err != nil {
+		return g.worktreesFromDirs(ctx)
+	}
+
+	refs := make([]WorktreeRef, 0)
+	var path string
+	var head string
+	var branch string
+	flush := func() {
+		if path == "" {
+			return
+		}
+		cleanPath := filepath.Clean(path)
+		if filepath.Dir(cleanPath) != root || filepath.Base(cleanPath) == cacheDirectoryName {
+			path, head, branch = "", "", ""
+			return
+		}
+		branchName := "-"
+		if branch != "" {
+			branchName = strings.TrimPrefix(branch, "refs/heads/")
+		} else if head != "" {
+			short := head
+			if len(short) > 12 {
+				short = short[:12]
+			}
+			branchName = "detached:" + short
+		}
+		refs = append(refs, WorktreeRef{
+			Name:   filepath.Base(cleanPath),
+			Path:   cleanPath,
+			Branch: branchName,
+		})
+		path, head, branch = "", "", ""
+	}
+
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			flush()
+			continue
+		}
+		key, value, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "worktree":
+			flush()
+			path = value
+		case "HEAD":
+			head = value
+		case "branch":
+			branch = value
+		}
+	}
+	flush()
+	return refs, nil
+}
+
+func (g *Git) worktreesFromDirs(ctx context.Context) ([]WorktreeRef, error) {
+	paths, err := g.WorktreePaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]WorktreeRef, 0, len(paths))
+	for _, path := range paths {
+		refs = append(refs, WorktreeRef{
+			Name:   filepath.Base(path),
+			Path:   path,
+			Branch: g.Branch(ctx, path),
+		})
+	}
+	return refs, nil
 }
 
 func (g *Git) Branch(ctx context.Context, path string) string {

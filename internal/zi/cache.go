@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type Cache struct {
@@ -48,6 +49,18 @@ func (c *Cache) Load(ctx context.Context) (map[string]Worktree, error) {
 		entries[entry.Path] = entry
 	}
 	return entries, nil
+}
+
+func (c *Cache) Fresh(ctx context.Context, maxAge time.Duration) bool {
+	path, err := c.Path(ctx)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < maxAge
 }
 
 func (c *Cache) Save(ctx context.Context, entries []Worktree) error {

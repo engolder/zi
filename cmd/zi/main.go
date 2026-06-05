@@ -5,48 +5,35 @@ import (
 	"fmt"
 	"os"
 
-	"go.uber.org/fx"
-
 	"zi/internal/zi"
 )
 
 func main() {
-	code := 0
-
-	app := fx.New(
-		fx.NopLogger,
-		fx.Provide(
-			zi.NewEnv,
-			zi.NewConfig,
-			zi.NewRunner,
-			zi.NewCache,
-			zi.NewGit,
-			zi.NewPRService,
-			zi.NewService,
-			zi.NewCLI,
-		),
-		fx.Invoke(func(lc fx.Lifecycle, cli *zi.CLI) {
-			lc.Append(fx.Hook{
-				OnStart: func(ctx context.Context) error {
-					var err error
-					code, err = cli.Run(ctx, os.Args[1:])
-					if err != nil {
-						fmt.Fprintln(os.Stderr, err)
-					}
-					return err
-				},
-				OnStop: func(context.Context) error {
-					return nil
-				},
-			})
-		}),
-	)
-
-	if err := app.Start(context.Background()); err != nil {
-		os.Exit(1)
+	env, err := zi.NewEnv()
+	if err != nil {
+		exit(1, err)
 	}
-	if err := app.Stop(context.Background()); err != nil {
-		os.Exit(1)
+	config, err := zi.NewConfig(env)
+	if err != nil {
+		exit(1, err)
+	}
+	runner := zi.NewRunner()
+	git := zi.NewGit(env, config, runner)
+	cache := zi.NewCache(git)
+	prs := zi.NewPRService(git, runner)
+	service := zi.NewService(env, config, git, cache, prs)
+	cli := zi.NewCLI(service, runner)
+
+	code, err := cli.Run(context.Background(), os.Args[1:])
+	if err != nil {
+		exit(code, err)
+	}
+	os.Exit(code)
+}
+
+func exit(code int, err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
 	os.Exit(code)
 }

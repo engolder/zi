@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const backgroundRefreshDebounce = 5 * time.Second
 
 type CLI struct {
 	service *Service
@@ -91,7 +94,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 			return 1, err
 		}
 		if !refresh {
-			c.refreshInBackground()
+			c.refreshInBackground(ctx, false)
 		}
 		c.print.List(rows, false)
 		return 0, nil
@@ -104,7 +107,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		c.refreshInBackground()
+		c.refreshInBackground(ctx, true)
 		fmt.Println(path)
 		return 0, nil
 	case deleteWorktree:
@@ -114,7 +117,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		}
 		err := c.service.Delete(ctx, query, force)
 		if err == nil {
-			c.refreshInBackground()
+			c.refreshInBackground(ctx, true)
 		}
 		return code(err), err
 	default:
@@ -127,7 +130,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 			return code(err), err
 		}
 		if !refresh {
-			c.refreshInBackground()
+			c.refreshInBackground(ctx, false)
 		}
 		fmt.Println(path)
 		return 0, nil
@@ -174,7 +177,10 @@ func (c *CLI) shell(shell string) error {
 	return nil
 }
 
-func (c *CLI) refreshInBackground() {
+func (c *CLI) refreshInBackground(ctx context.Context, force bool) {
+	if !force && c.service.CacheFresh(ctx, backgroundRefreshDebounce) {
+		return
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return

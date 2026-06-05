@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Service struct {
@@ -26,26 +27,24 @@ func NewService(env Env, config Config, git *Git, cache *Cache, prs *PRService) 
 
 func (s *Service) List(ctx context.Context) ([]Worktree, error) {
 	cached, _ := s.cache.Load(ctx)
-	paths, err := s.git.WorktreePaths(ctx)
+	refs, err := s.git.Worktrees(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	rows := make([]Worktree, 0, len(paths))
-	for _, path := range paths {
-		name := filepath.Base(path)
-		branch := s.git.Branch(ctx, path)
-		if entry, ok := cached[path]; ok && entry.Branch == branch {
+	rows := make([]Worktree, 0, len(refs))
+	for _, ref := range refs {
+		if entry, ok := cached[ref.Path]; ok && entry.Branch == ref.Branch {
 			rows = append(rows, entry)
 			continue
 		}
 		rows = append(rows, Worktree{
-			Name:    name,
-			Path:    path,
-			Branch:  branch,
-			Display: branch,
-			Dirty:   s.git.Dirty(ctx, path),
-			Ahead:   s.git.Ahead(ctx, path),
+			Name:    ref.Name,
+			Path:    ref.Path,
+			Branch:  ref.Branch,
+			Display: ref.Branch,
+			Dirty:   s.git.Dirty(ctx, ref.Path),
+			Ahead:   s.git.Ahead(ctx, ref.Path),
 		})
 	}
 	sortWorktrees(rows)
@@ -57,28 +56,26 @@ func (s *Service) Refresh(ctx context.Context) ([]Worktree, error) {
 	if err != nil {
 		return nil, err
 	}
-	paths, err := s.git.WorktreePaths(ctx)
+	refs, err := s.git.Worktrees(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	prs := s.prs.ByBranch(ctx, repo)
-	rows := make([]Worktree, 0, len(paths))
-	for _, path := range paths {
-		name := filepath.Base(path)
-		branch := s.git.Branch(ctx, path)
-		pr := prs[branch]
-		merged := s.git.IsMerged(ctx, path, branch, pr.State == "merged")
+	rows := make([]Worktree, 0, len(refs))
+	for _, ref := range refs {
+		pr := prs[ref.Branch]
+		merged := s.git.IsMerged(ctx, ref.Path, ref.Branch, pr.State == "merged")
 		rows = append(rows, Worktree{
-			Name:     name,
-			Path:     path,
-			Branch:   branch,
-			Display:  branch,
+			Name:     ref.Name,
+			Path:     ref.Path,
+			Branch:   ref.Branch,
+			Display:  ref.Branch,
 			PRNumber: pr.Number,
 			PRState:  pr.State,
 			Merged:   merged,
-			Dirty:    s.git.Dirty(ctx, path),
-			Ahead:    s.git.Ahead(ctx, path),
+			Dirty:    s.git.Dirty(ctx, ref.Path),
+			Ahead:    s.git.Ahead(ctx, ref.Path),
 		})
 	}
 	sortWorktrees(rows)
@@ -105,6 +102,10 @@ func (s *Service) Match(ctx context.Context, query string) ([]Worktree, error) {
 		}
 	}
 	return matches, nil
+}
+
+func (s *Service) CacheFresh(ctx context.Context, maxAge time.Duration) bool {
+	return s.cache.Fresh(ctx, maxAge)
 }
 
 func (s *Service) New(ctx context.Context, name string) (string, error) {
