@@ -31,6 +31,16 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 
 	if len(args) > 0 {
 		switch args[0] {
+		case "-":
+			if len(args) != 1 {
+				return 2, errors.New("zi: - does not accept arguments")
+			}
+			previous := os.Getenv("OLDPWD")
+			if previous == "" {
+				return 1, errors.New("zi: OLDPWD is not set")
+			}
+			fmt.Println(previous)
+			return 0, nil
 		case "refresh":
 			_, err := c.service.Refresh(ctx)
 			return code(err), err
@@ -49,6 +59,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	var list bool
 	var newWorktree bool
 	var deleteWorktree bool
+	var moveWorktree bool
 	var force bool
 	var refresh bool
 	var shell string
@@ -58,6 +69,8 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	fs.BoolVar(&newWorktree, "new", false, "create a worktree")
 	fs.BoolVar(&deleteWorktree, "d", false, "delete a worktree")
 	fs.BoolVar(&deleteWorktree, "delete", false, "delete a worktree")
+	fs.BoolVar(&moveWorktree, "m", false, "move a worktree")
+	fs.BoolVar(&moveWorktree, "move", false, "move a worktree")
 	fs.BoolVar(&force, "f", false, "force delete dirty worktrees")
 	fs.BoolVar(&force, "force", false, "force delete dirty worktrees")
 	fs.BoolVar(&refresh, "r", false, "refresh status and PR cache")
@@ -82,7 +95,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		if _, err := c.service.Refresh(ctx); err != nil {
 			return 1, err
 		}
-		if !list && !newWorktree && !deleteWorktree && len(rest) == 0 {
+		if !list && !newWorktree && !deleteWorktree && !moveWorktree && len(rest) == 0 {
 			return 0, nil
 		}
 	}
@@ -120,6 +133,17 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 			c.refreshInBackground(ctx, true)
 		}
 		return code(err), err
+	case moveWorktree:
+		if len(rest) != 2 {
+			return 2, errors.New("zi: -m/--move requires a query and name")
+		}
+		path, err := c.service.Move(ctx, rest[0], rest[1])
+		if err != nil {
+			return 1, err
+		}
+		c.refreshInBackground(ctx, true)
+		fmt.Println(path)
+		return 0, nil
 	default:
 		query := ""
 		if len(rest) > 0 {
@@ -211,9 +235,12 @@ func code(err error) int {
 func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
   zi [query]          pick a worktree and print its path
+  zi -                pick the previous directory
   zi -l, --list       list worktrees
   zi -n, --new [name] create a worktree and print its path
   zi -d, --delete     delete a worktree
+  zi -m, --move <query> <name>
+                     move a worktree and rename its branch
   zi -f, --force      allow deleting dirty worktrees with --delete
   zi -r, --refresh    refresh status/PR cache before running
   zi -s, --shell zsh  print shell integration

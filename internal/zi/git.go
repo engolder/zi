@@ -267,6 +267,16 @@ func (g *Git) AddWorktree(ctx context.Context, repo string, path string, name st
 	return err
 }
 
+func (g *Git) MoveWorktree(ctx context.Context, repo string, oldPath string, newPath string) error {
+	_, err := g.run.Output(ctx, repo, "git", "worktree", "move", oldPath, newPath)
+	return err
+}
+
+func (g *Git) RenameCurrentBranch(ctx context.Context, path string, name string) error {
+	_, err := g.run.Output(ctx, path, "git", "branch", "-m", name)
+	return err
+}
+
 func (g *Git) Prune(ctx context.Context, repo string) {
 	_, _ = g.run.Output(ctx, repo, "git", "worktree", "prune")
 }

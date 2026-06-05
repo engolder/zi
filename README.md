@@ -6,9 +6,12 @@ Worktree picker for repositories that keep temporary worktrees under a configura
 
 ```sh
 zi [query]       # pick a worktree and print its path
+zi main          # pick the repository root
+zi -             # pick the previous directory
 zi -l, --list    # list worktrees
 zi -n, --new     # create a worktree
 zi -d, --delete  # delete a clean worktree
+zi -m, --move <query> <name> # move a worktree and rename its branch
 zi -f, --force   # allow deleting dirty worktrees with --delete
 zi -r, --refresh # refresh cache before running
 zi -s, --shell   # print shell integration
@@ -46,3 +49,5 @@ The binary cannot change the parent shell's working directory. Use the zsh integ
 ```sh
 eval "$(zi --shell zsh)"
 ```
+
+The repository root is listed first as `main`.

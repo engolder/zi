@@ -7,6 +7,7 @@ type Worktree struct {
 	Path    string `json:"path"`
 	Branch  string `json:"branch"`
 	Display string `json:"display"`
+	Root    bool   `json:"root,omitempty"`
 
 	PRNumber int    `json:"pr_number,omitempty"`
 	PRState  string `json:"pr_state,omitempty"`

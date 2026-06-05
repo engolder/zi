@@ -27,12 +27,17 @@ func NewService(env Env, config Config, git *Git, cache *Cache, prs *PRService) 
 
 func (s *Service) List(ctx context.Context) ([]Worktree, error) {
 	cached, _ := s.cache.Load(ctx)
+	repo, err := s.git.Repo(ctx)
+	if err != nil {
+		return nil, err
+	}
 	refs, err := s.git.Worktrees(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	rows := make([]Worktree, 0, len(refs))
+	rows := make([]Worktree, 0, len(refs)+1)
+	rows = append(rows, s.rootWorktree(ctx, repo, cached))
 	for _, ref := range refs {
 		if entry, ok := cached[ref.Path]; ok && entry.Branch == ref.Branch {
 			rows = append(rows, entry)
@@ -62,7 +67,8 @@ func (s *Service) Refresh(ctx context.Context) ([]Worktree, error) {
 	}
 
 	prs := s.prs.ByBranch(ctx, repo)
-	rows := make([]Worktree, 0, len(refs))
+	rows := make([]Worktree, 0, len(refs)+1)
+	rows = append(rows, s.rootWorktree(ctx, repo, nil))
 	for _, ref := range refs {
 		pr := prs[ref.Branch]
 		merged := s.git.IsMerged(ctx, ref.Path, ref.Branch, pr.State == "merged")
@@ -85,6 +91,25 @@ func (s *Service) Refresh(ctx context.Context) ([]Worktree, error) {
 	return rows, nil
 }
 
+func (s *Service) rootWorktree(ctx context.Context, repo string, cached map[string]Worktree) Worktree {
+	branch := s.git.Branch(ctx, repo)
+	if entry, ok := cached[repo]; ok && entry.Branch == branch {
+		entry.Name = "main"
+		entry.Path = repo
+		entry.Root = true
+		return entry
+	}
+	return Worktree{
+		Name:    "main",
+		Path:    repo,
+		Branch:  branch,
+		Display: branch,
+		Root:    true,
+		Dirty:   s.git.Dirty(ctx, repo),
+		Ahead:   s.git.Ahead(ctx, repo),
+	}
+}
+
 func (s *Service) Match(ctx context.Context, query string) ([]Worktree, error) {
 	rows, err := s.List(ctx)
 	if err != nil {
@@ -92,6 +117,9 @@ func (s *Service) Match(ctx context.Context, query string) ([]Worktree, error) {
 	}
 	if query == "" {
 		return rows, nil
+	}
+	if match, ok := exactMatch(rows, query); ok {
+		return []Worktree{match}, nil
 	}
 	matches := make([]Worktree, 0)
 	for _, row := range rows {
@@ -102,6 +130,25 @@ func (s *Service) Match(ctx context.Context, query string) ([]Worktree, error) {
 		}
 	}
 	return matches, nil
+}
+
+func exactMatch(rows []Worktree, query string) (Worktree, bool) {
+	for _, row := range rows {
+		if row.Name == query {
+			return row, true
+		}
+	}
+	for _, row := range rows {
+		if row.Branch == query {
+			return row, true
+		}
+	}
+	for _, row := range rows {
+		if row.PRNumber != 0 && fmt.Sprintf("#%d", row.PRNumber) == query {
+			return row, true
+		}
+	}
+	return Worktree{}, false
 }
 
 func (s *Service) CacheFresh(ctx context.Context, maxAge time.Duration) bool {
@@ -153,6 +200,9 @@ func (s *Service) Delete(ctx context.Context, query string, force bool) error {
 	}
 
 	target := matches[0]
+	if target.Root {
+		return fmt.Errorf("zi: cannot delete repository root: %s", target.Path)
+	}
 	if s.git.Dirty(ctx, target.Path) && !force {
 		return fmt.Errorf("zi: worktree has dirty changes: %s", target.Path)
 	}
@@ -174,8 +224,69 @@ func (s *Service) Delete(ctx context.Context, query string, force bool) error {
 	return nil
 }
 
+func (s *Service) Move(ctx context.Context, query string, name string) (string, error) {
+	if query == "" {
+		return "", errors.New("zi: -m requires a query")
+	}
+	if name == "" {
+		return "", errors.New("zi: -m requires a name")
+	}
+	if err := validateWorktreeName(name); err != nil {
+		return "", err
+	}
+	repo, err := s.git.Repo(ctx)
+	if err != nil {
+		return "", err
+	}
+	matches, err := s.Match(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("zi: no matching worktree: %s", query)
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("zi: multiple matching worktrees: %s", query)
+	}
+
+	target := matches[0]
+	if target.Root {
+		return "", fmt.Errorf("zi: cannot move repository root: %s", target.Path)
+	}
+	if inside(s.env.Cwd, target.Path) {
+		return "", fmt.Errorf("zi: cannot move current worktree from inside it: %s", target.Path)
+	}
+	if target.Branch == "" || target.Branch == "-" || strings.HasPrefix(target.Branch, "detached:") {
+		return "", fmt.Errorf("zi: cannot move detached worktree: %s", target.Name)
+	}
+
+	newPath := filepath.Join(repo, s.config.WorktreeRelativePath, name)
+	if _, err := os.Stat(newPath); err == nil {
+		return "", fmt.Errorf("zi: worktree already exists: %s", newPath)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if target.Branch != name && s.git.BranchExists(ctx, repo, name) {
+		return "", fmt.Errorf("zi: branch already exists: %s", name)
+	}
+
+	if err := s.git.MoveWorktree(ctx, repo, target.Path, newPath); err != nil {
+		return "", err
+	}
+	if target.Branch != name {
+		if err := s.git.RenameCurrentBranch(ctx, newPath, name); err != nil {
+			return "", err
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Moved %s to %s\n", target.Name, name)
+	return newPath, nil
+}
+
 func sortWorktrees(rows []Worktree) {
 	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Root != rows[j].Root {
+			return rows[i].Root
+		}
 		return rows[i].Name < rows[j].Name
 	})
 }
