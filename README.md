@@ -10,7 +10,7 @@ zi main          # pick the repository root
 zi -             # pick the previous directory
 zi -l, --list    # list worktrees
 zi -n, --new     # create a worktree
-zi -d, --delete  # delete a clean worktree
+zi -d, --delete  # delete a clean worktree; with no query, delete the current worktree
 zi -m, --move <query> <name> # move a worktree and rename its branch
 zi -f, --force   # allow deleting dirty worktrees with --delete
 zi -r, --refresh # refresh cache before running

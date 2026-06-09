@@ -1,6 +1,7 @@
 package zi
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -44,6 +45,91 @@ func TestNewReturnsPostNewFailure(t *testing.T) {
 	_, err := service.New(context.Background(), "feature")
 	if err == nil || !strings.Contains(err.Error(), "postNew failed") {
 		t.Fatalf("New() error = %v", err)
+	}
+}
+
+func TestPlanDeleteWithoutQueryTargetsCurrentWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	config := Config{WorktreeRelativePath: ".claude/worktrees"}
+	service := newTestService(t, repo, config)
+
+	path, err := service.New(ctx, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.env.Cwd = filepath.Join(path, "nested")
+	if err := os.MkdirAll(service.env.Cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := service.PlanDelete(ctx, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Confirm {
+		t.Fatal("PlanDelete() Confirm = false")
+	}
+	if plan.NextPath != repo {
+		t.Fatalf("PlanDelete() NextPath = %q, want %q", plan.NextPath, repo)
+	}
+	if plan.Target.Path != path {
+		t.Fatalf("PlanDelete() target path = %q, want %q", plan.Target.Path, path)
+	}
+
+	if err := service.Delete(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deleted worktree stat error = %v, want not exist", err)
+	}
+}
+
+func TestPlanDeleteWithoutQueryRequiresCurrentWorktree(t *testing.T) {
+	repo := initGitRepo(t)
+	service := newTestService(t, repo, Config{WorktreeRelativePath: ".claude/worktrees"})
+
+	_, err := service.PlanDelete(context.Background(), "", false)
+	if err == nil || !strings.Contains(err.Error(), "must run inside a worktree") {
+		t.Fatalf("PlanDelete() error = %v", err)
+	}
+}
+
+func TestDeleteWithoutQueryCancelDoesNotDelete(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	config := Config{WorktreeRelativePath: ".claude/worktrees"}
+	setup := newTestService(t, repo, config)
+	path, err := setup.New(ctx, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := NewRunner()
+	env := Env{Home: t.TempDir(), Cwd: path}
+	git := NewGit(env, config, run)
+	service := NewService(env, config, git, NewCache(git), NewPRService(git, run), run)
+	cli := NewCLI(service, run)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cli.print = Printer{out: &stdout, err: &stderr}
+	cli.in = strings.NewReader("n\n")
+
+	code, err := cli.Run(ctx, []string{"-d"})
+	if code != 1 {
+		t.Fatalf("Run() code = %d, want 1", code)
+	}
+	if err == nil || !strings.Contains(err.Error(), "delete canceled") {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Delete worktree?") || !strings.Contains(stderr.String(), "feature") {
+		t.Fatalf("stderr = %q, want confirmation with target", stderr.String())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("worktree stat error = %v", err)
 	}
 }
 

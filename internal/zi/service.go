@@ -22,6 +22,13 @@ type Service struct {
 	run    *Runner
 }
 
+type DeletePlan struct {
+	Repo     string
+	Target   Worktree
+	NextPath string
+	Confirm  bool
+}
+
 func NewService(env Env, config Config, git *Git, cache *Cache, prs *PRService, run *Runner) *Service {
 	return &Service{env: env, config: config, git: git, cache: cache, prs: prs, run: run}
 }
@@ -194,47 +201,70 @@ func (s *Service) runPostNew(ctx context.Context, repo string, path string) erro
 	return nil
 }
 
-func (s *Service) Delete(ctx context.Context, query string, force bool) error {
-	if query == "" {
-		return errors.New("zi: -d requires a query")
-	}
+func (s *Service) PlanDelete(ctx context.Context, query string, force bool) (DeletePlan, error) {
 	repo, err := s.git.Repo(ctx)
 	if err != nil {
-		return err
-	}
-	matches, err := s.Match(ctx, query)
-	if err != nil {
-		return err
-	}
-	if len(matches) == 0 {
-		return fmt.Errorf("zi: no matching worktree: %s", query)
-	}
-	if len(matches) > 1 {
-		return fmt.Errorf("zi: multiple matching worktrees: %s", query)
+		return DeletePlan{}, err
 	}
 
-	target := matches[0]
+	var target Worktree
+	if query == "" {
+		rows, err := s.List(ctx)
+		if err != nil {
+			return DeletePlan{}, err
+		}
+		for _, row := range rows {
+			if !row.Root && inside(s.env.Cwd, row.Path) {
+				target = row
+				break
+			}
+		}
+		if target.Path == "" {
+			return DeletePlan{}, errors.New("zi: -d with no query must run inside a worktree")
+		}
+	} else {
+		matches, err := s.Match(ctx, query)
+		if err != nil {
+			return DeletePlan{}, err
+		}
+		if len(matches) == 0 {
+			return DeletePlan{}, fmt.Errorf("zi: no matching worktree: %s", query)
+		}
+		if len(matches) > 1 {
+			return DeletePlan{}, fmt.Errorf("zi: multiple matching worktrees: %s", query)
+		}
+		target = matches[0]
+	}
+
 	if target.Root {
-		return fmt.Errorf("zi: cannot delete repository root: %s", target.Path)
+		return DeletePlan{}, fmt.Errorf("zi: cannot delete repository root: %s", target.Path)
 	}
 	if s.git.Dirty(ctx, target.Path) && !force {
-		return fmt.Errorf("zi: worktree has dirty changes: %s", target.Path)
+		return DeletePlan{}, fmt.Errorf("zi: worktree has dirty changes: %s", target.Path)
 	}
-	if inside(s.env.Cwd, target.Path) {
-		return fmt.Errorf("zi: cannot delete current worktree from inside it: %s", target.Path)
+	if inside(s.env.Cwd, target.Path) && query != "" {
+		return DeletePlan{}, fmt.Errorf("zi: cannot delete current worktree from inside it: %s", target.Path)
 	}
 
-	trashDir := filepath.Join(repo, s.config.WorktreeRelativePath, ".zid-deleted")
+	nextPath := ""
+	if inside(s.env.Cwd, target.Path) {
+		nextPath = repo
+	}
+	return DeletePlan{Repo: repo, Target: target, NextPath: nextPath, Confirm: query == ""}, nil
+}
+
+func (s *Service) Delete(ctx context.Context, plan DeletePlan) error {
+	trashDir := filepath.Join(plan.Repo, s.config.WorktreeRelativePath, ".zid-deleted")
 	if err := os.MkdirAll(trashDir, 0o755); err != nil {
 		return err
 	}
-	trashPath := filepath.Join(trashDir, target.Name+"."+randomSuffix())
-	if err := os.Rename(target.Path, trashPath); err != nil {
+	trashPath := filepath.Join(trashDir, plan.Target.Name+"."+randomSuffix())
+	if err := os.Rename(plan.Target.Path, trashPath); err != nil {
 		return err
 	}
-	s.git.Prune(ctx, repo)
-	s.git.DeleteBranch(ctx, repo, target.Branch)
-	fmt.Fprintf(os.Stderr, "Deleted %s\n", target.Name)
+	s.git.Prune(ctx, plan.Repo)
+	s.git.DeleteBranch(ctx, plan.Repo, plan.Target.Branch)
+	fmt.Fprintf(os.Stderr, "Deleted %s\n", plan.Target.Name)
 	return nil
 }
 

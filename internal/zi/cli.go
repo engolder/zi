@@ -1,10 +1,12 @@
 package zi
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,10 +19,11 @@ type CLI struct {
 	service *Service
 	run     *Runner
 	print   Printer
+	in      io.Reader
 }
 
 func NewCLI(service *Service, run *Runner) *CLI {
-	return &CLI{service: service, run: run, print: NewPrinter()}
+	return &CLI{service: service, run: run, print: NewPrinter(), in: os.Stdin}
 }
 
 func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
@@ -128,9 +131,25 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		if len(rest) > 0 {
 			query = rest[0]
 		}
-		err := c.service.Delete(ctx, query, force)
+		plan, err := c.service.PlanDelete(ctx, query, force)
+		if err != nil {
+			return code(err), err
+		}
+		if plan.Confirm {
+			confirmed, err := c.confirmDelete(plan.Target)
+			if err != nil {
+				return 1, err
+			}
+			if !confirmed {
+				return 1, errors.New("zi: delete canceled")
+			}
+		}
+		err = c.service.Delete(ctx, plan)
 		if err == nil {
 			c.refreshInBackground(ctx, true)
+			if plan.NextPath != "" {
+				fmt.Println(plan.NextPath)
+			}
 		}
 		return code(err), err
 	case moveWorktree:
@@ -158,6 +177,25 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		}
 		fmt.Println(path)
 		return 0, nil
+	}
+}
+
+func (c *CLI) confirmDelete(target Worktree) (bool, error) {
+	fmt.Fprintln(c.print.err, "Delete worktree?")
+	confirmPrinter := c.print
+	confirmPrinter.out = c.print.err
+	confirmPrinter.List([]Worktree{target}, false)
+	fmt.Fprint(c.print.err, "Delete? [y/N] ")
+
+	answer, err := bufio.NewReader(c.in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
 	}
 }
 
@@ -238,7 +276,8 @@ func usage() {
   zi -                pick the previous directory
   zi -l, --list       list worktrees
   zi -n, --new [name] create a worktree and print its path
-  zi -d, --delete     delete a worktree
+  zi -d, --delete [query]
+                     delete a worktree
   zi -m, --move <query> <name>
                      move a worktree and rename its branch
   zi -f, --force      allow deleting dirty worktrees with --delete

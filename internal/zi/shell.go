@@ -5,7 +5,19 @@ const zshIntegration = `# zi shell integration
 zi() {
   local target
   case " $* " in
-    *" -l "*|*" --list "*|*" -d "*|*" --delete "*|*" -m "*|*" --move "*|*" -f "*|*" --force "*|*" -r "*|*" --refresh "*|*" -s "*|*" --shell "*|*" -h "*|*" --help "*|*" refresh "*|*" shell "*)
+    *" -l "*|*" --list "*|*" -m "*|*" --move "*|*" -s "*|*" --shell "*|*" -h "*|*" --help "*|*" refresh "*|*" shell "*)
+      command zi "$@"
+      return $?
+      ;;
+    *" -d "*|*" --delete "*)
+      target="$(command zi "$@")" || return $?
+      if [[ -n "$target" ]]; then
+        cd "$target"
+        return $?
+      fi
+      return 0
+      ;;
+    *" -f "*|*" --force "*|*" -r "*|*" --refresh "*)
       command zi "$@"
       return $?
       ;;
