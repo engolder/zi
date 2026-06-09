@@ -1,12 +1,10 @@
 package zi
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,11 +17,10 @@ type CLI struct {
 	service *Service
 	run     *Runner
 	print   Printer
-	in      io.Reader
 }
 
 func NewCLI(service *Service, run *Runner) *CLI {
-	return &CLI{service: service, run: run, print: NewPrinter(), in: os.Stdin}
+	return &CLI{service: service, run: run, print: NewPrinter()}
 }
 
 func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
@@ -136,7 +133,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 			return code(err), err
 		}
 		if plan.Confirm {
-			confirmed, err := c.confirmDelete(plan.Target)
+			confirmed, err := c.confirmDelete(ctx, plan.Target)
 			if err != nil {
 				return 1, err
 			}
@@ -180,23 +177,23 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	}
 }
 
-func (c *CLI) confirmDelete(target Worktree) (bool, error) {
-	fmt.Fprintln(c.print.err, "Delete worktree?")
-	confirmPrinter := c.print
-	confirmPrinter.out = c.print.err
-	confirmPrinter.List([]Worktree{target}, false)
-	fmt.Fprint(c.print.err, "Delete? [y/N] ")
-
-	answer, err := bufio.NewReader(c.in).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+func (c *CLI) confirmDelete(ctx context.Context, target Worktree) (bool, error) {
+	if _, err := exec.LookPath("fzf"); err != nil {
+		return false, errors.New("zi: fzf not found")
+	}
+	var status strings.Builder
+	statusPrinter := c.print
+	statusPrinter.out = &status
+	statusPrinter.List([]Worktree{target}, false)
+	header := "Delete worktree?\n" + strings.TrimRight(status.String(), "\n")
+	selected, err := c.run.RunInput(ctx, "cancel\ndelete\n", "", "fzf", "--ansi", "--height", "40%", "--layout=reverse", "--prompt=confirm> ", "--header="+header)
+	if err != nil && selected != "" {
 		return false, err
 	}
-	switch strings.ToLower(strings.TrimSpace(answer)) {
-	case "y", "yes":
-		return true, nil
-	default:
+	if selected == "" {
 		return false, nil
 	}
+	return selected == "delete", nil
 }
 
 func (c *CLI) pick(ctx context.Context, query string) (string, error) {

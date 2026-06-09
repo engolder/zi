@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -122,7 +123,7 @@ func TestDeleteWithoutQueryCancelDoesNotDelete(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cli.print = Printer{out: &stdout, err: &stderr}
-	cli.in = strings.NewReader("n\n")
+	fzfArgsPath := fakeFzf(t, "cancel")
 
 	code, err := cli.Run(ctx, []string{"-d"})
 	if code != 1 {
@@ -134,12 +135,29 @@ func TestDeleteWithoutQueryCancelDoesNotDelete(t *testing.T) {
 	if stdout.String() != "" {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Delete worktree?") || !strings.Contains(stderr.String(), "feature") || !strings.Contains(stderr.String(), "dirty") {
-		t.Fatalf("stderr = %q, want confirmation with target", stderr.String())
+	fzfArgs, err := os.ReadFile(fzfArgsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fzfArgs), "Delete worktree?") || !strings.Contains(string(fzfArgs), "feature") || !strings.Contains(string(fzfArgs), "dirty") {
+		t.Fatalf("fzf args = %q, want confirmation with target status", string(fzfArgs))
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("worktree stat error = %v", err)
 	}
+}
+
+func fakeFzf(t *testing.T, selected string) string {
+	t.Helper()
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + strconv.Quote(argsPath) + "\nprintf '%s\\n' " + strconv.Quote(selected) + "\n"
+	path := filepath.Join(dir, "fzf")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return argsPath
 }
 
 func newTestService(t *testing.T, repo string, config Config) *Service {
