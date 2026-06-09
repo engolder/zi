@@ -3,6 +3,7 @@ package zi
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +12,8 @@ import (
 	"testing"
 )
 
-func TestNewRunsPostNewScripts(t *testing.T) {
+func TestNewMarksPostNewRunning(t *testing.T) {
+	ctx := context.Background()
 	repo := initGitRepo(t)
 	service := newTestService(t, repo, Config{
 		WorktreeRelativePath: ".claude/worktrees",
@@ -20,11 +22,39 @@ func TestNewRunsPostNewScripts(t *testing.T) {
 		},
 	})
 
-	path, err := service.New(context.Background(), "feature")
+	path, err := service.New(ctx, "feature")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(path, "hook.txt")); !os.IsNotExist(err) {
+		t.Fatalf("hook.txt stat error = %v, want not exist", err)
+	}
+	cached, err := service.cache.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached[path].PostNewStatus != postNewRunning {
+		t.Fatalf("PostNewStatus = %q, want %q", cached[path].PostNewStatus, postNewRunning)
+	}
+}
 
+func TestRunPostNewRunsScripts(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	service := newTestService(t, repo, Config{
+		WorktreeRelativePath: ".claude/worktrees",
+		PostNew: map[string][]string{
+			repo: {"printf hook > hook.txt"},
+		},
+	})
+
+	path, err := service.New(ctx, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RunPostNew(ctx, path); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(filepath.Join(path, "hook.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -32,9 +62,45 @@ func TestNewRunsPostNewScripts(t *testing.T) {
 	if string(data) != "hook" {
 		t.Fatalf("hook.txt = %q", string(data))
 	}
+	cached, err := service.cache.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached[path].PostNewStatus != postNewDone {
+		t.Fatalf("PostNewStatus = %q, want %q", cached[path].PostNewStatus, postNewDone)
+	}
 }
 
-func TestNewReturnsPostNewFailure(t *testing.T) {
+func TestNewSendsPostNewOutputToStderr(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	service := newTestService(t, repo, Config{
+		WorktreeRelativePath: ".claude/worktrees",
+		PostNew: map[string][]string{
+			repo: {"printf hook-output"},
+		},
+	})
+
+	path, err := service.New(ctx, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := captureStdoutStderr(t, func() {
+		err = service.RunPostNew(ctx, path)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "hook-output") {
+		t.Fatalf("stderr = %q, want hook output", stderr)
+	}
+}
+
+func TestRunPostNewReturnsFailure(t *testing.T) {
+	ctx := context.Background()
 	repo := initGitRepo(t)
 	service := newTestService(t, repo, Config{
 		WorktreeRelativePath: ".claude/worktrees",
@@ -43,9 +109,41 @@ func TestNewReturnsPostNewFailure(t *testing.T) {
 		},
 	})
 
-	_, err := service.New(context.Background(), "feature")
+	path, err := service.New(ctx, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = service.RunPostNew(ctx, path)
 	if err == nil || !strings.Contains(err.Error(), "postNew failed") {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("RunPostNew() error = %v", err)
+	}
+	cached, err := service.cache.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached[path].PostNewStatus != postNewFailed {
+		t.Fatalf("PostNewStatus = %q, want %q", cached[path].PostNewStatus, postNewFailed)
+	}
+}
+
+func TestWithLatestPostNewStatusDoesNotRegressDone(t *testing.T) {
+	service := &Service{}
+	row := Worktree{
+		Path:          "/repo/.claude/worktrees/feature",
+		Branch:        "feature",
+		PostNewStatus: postNewRunning,
+	}
+	latest := map[string]Worktree{
+		row.Path: {
+			Path:          row.Path,
+			Branch:        row.Branch,
+			PostNewStatus: postNewDone,
+		},
+	}
+
+	got := service.withLatestPostNewStatus(row, latest)
+	if got.PostNewStatus != postNewDone {
+		t.Fatalf("PostNewStatus = %q, want %q", got.PostNewStatus, postNewDone)
 	}
 }
 
@@ -287,6 +385,46 @@ func fakeFzf(t *testing.T, selected string) string {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return argsPath
+}
+
+func captureStdoutStderr(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdoutReader.Close()
+	defer stderrReader.Close()
+	os.Stdout = stdoutWriter
+	os.Stderr = stderrWriter
+	defer func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	}()
+
+	fn()
+
+	if err := stdoutWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stderrWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := io.ReadAll(stdoutReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := io.ReadAll(stderrReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(stdout), string(stderr)
 }
 
 func newTestService(t *testing.T, repo string, config Config) *Service {

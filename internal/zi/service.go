@@ -34,6 +34,12 @@ type PrunePlan struct {
 	Targets []Worktree
 }
 
+const (
+	postNewRunning = "running"
+	postNewDone    = "done"
+	postNewFailed  = "failed"
+)
+
 func NewService(env Env, config Config, git *Git, cache *Cache, prs *PRService, run *Runner) *Service {
 	return &Service{env: env, config: config, git: git, cache: cache, prs: prs, run: run}
 }
@@ -56,20 +62,22 @@ func (s *Service) List(ctx context.Context) ([]Worktree, error) {
 			rows = append(rows, entry)
 			continue
 		}
-		rows = append(rows, Worktree{
+		row := Worktree{
 			Name:    ref.Name,
 			Path:    ref.Path,
 			Branch:  ref.Branch,
 			Display: ref.Branch,
 			Dirty:   s.git.Dirty(ctx, ref.Path),
 			Ahead:   s.git.Ahead(ctx, ref.Path),
-		})
+		}
+		rows = append(rows, s.withPostNewStatus(row, cached))
 	}
 	sortWorktrees(rows)
 	return rows, nil
 }
 
 func (s *Service) Refresh(ctx context.Context) ([]Worktree, error) {
+	cached, _ := s.cache.Load(ctx)
 	repo, err := s.git.Repo(ctx)
 	if err != nil {
 		return nil, err
@@ -81,11 +89,11 @@ func (s *Service) Refresh(ctx context.Context) ([]Worktree, error) {
 
 	prs := s.prs.ByBranch(ctx, repo)
 	rows := make([]Worktree, 0, len(refs)+1)
-	rows = append(rows, s.rootWorktree(ctx, repo, nil))
+	rows = append(rows, s.rootWorktree(ctx, repo, cached))
 	for _, ref := range refs {
 		pr := prs[ref.Branch]
 		merged := s.git.IsMerged(ctx, ref.Path, ref.Branch, pr.State == "merged")
-		rows = append(rows, Worktree{
+		row := Worktree{
 			Name:     ref.Name,
 			Path:     ref.Path,
 			Branch:   ref.Branch,
@@ -95,13 +103,50 @@ func (s *Service) Refresh(ctx context.Context) ([]Worktree, error) {
 			Merged:   merged,
 			Dirty:    s.git.Dirty(ctx, ref.Path),
 			Ahead:    s.git.Ahead(ctx, ref.Path),
-		})
+		}
+		rows = append(rows, s.withPostNewStatus(row, cached))
 	}
 	sortWorktrees(rows)
+	if latest, err := s.cache.Load(ctx); err == nil {
+		for i := range rows {
+			rows[i] = s.withLatestPostNewStatus(rows[i], latest)
+		}
+	}
 	if err := s.cache.Save(ctx, rows); err != nil {
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (s *Service) withPostNewStatus(row Worktree, cached map[string]Worktree) Worktree {
+	if entry, ok := cached[row.Path]; ok && entry.Branch == row.Branch {
+		row.PostNewStatus = entry.PostNewStatus
+		row.PostNewError = entry.PostNewError
+	}
+	return row
+}
+
+func (s *Service) withLatestPostNewStatus(row Worktree, cached map[string]Worktree) Worktree {
+	entry, ok := cached[row.Path]
+	if !ok || entry.Branch != row.Branch {
+		return row
+	}
+	if postNewStatusRank(entry.PostNewStatus) >= postNewStatusRank(row.PostNewStatus) {
+		row.PostNewStatus = entry.PostNewStatus
+		row.PostNewError = entry.PostNewError
+	}
+	return row
+}
+
+func postNewStatusRank(status string) int {
+	switch status {
+	case postNewDone, postNewFailed:
+		return 2
+	case postNewRunning:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (s *Service) rootWorktree(ctx context.Context, repo string, cached map[string]Worktree) Worktree {
@@ -190,20 +235,74 @@ func (s *Service) New(ctx context.Context, name string) (string, error) {
 	if err := s.git.AddWorktree(ctx, repo, path, name); err != nil {
 		return "", err
 	}
-	if err := s.runPostNew(ctx, repo, path); err != nil {
-		return "", err
+	if len(s.config.PostNewScripts(repo)) > 0 {
+		if err := s.setPostNewStatus(ctx, path, postNewRunning, ""); err != nil {
+			return "", err
+		}
 	}
 	return path, nil
+}
+
+func (s *Service) HasPostNew(ctx context.Context) bool {
+	repo, err := s.git.Repo(ctx)
+	return err == nil && len(s.config.PostNewScripts(repo)) > 0
+}
+
+func (s *Service) RunPostNew(ctx context.Context, path string) error {
+	repo, err := s.git.Repo(ctx)
+	if err != nil {
+		return err
+	}
+	if len(s.config.PostNewScripts(repo)) == 0 {
+		return nil
+	}
+	_ = s.setPostNewStatus(ctx, path, postNewRunning, "")
+	if err := s.runPostNew(ctx, repo, path); err != nil {
+		_ = s.setPostNewStatus(ctx, path, postNewFailed, err.Error())
+		return err
+	}
+	if err := s.setPostNewStatus(ctx, path, postNewDone, ""); err != nil {
+		return err
+	}
+	_, _ = s.Refresh(ctx)
+	return nil
 }
 
 func (s *Service) runPostNew(ctx context.Context, repo string, path string) error {
 	for _, script := range s.config.PostNewScripts(repo) {
 		fmt.Fprintf(os.Stderr, "Running postNew: %s\n", script)
-		if err := s.run.Run(ctx, path, "sh", "-c", script); err != nil {
+		if err := s.run.RunToStderr(ctx, path, "sh", "-c", script); err != nil {
 			return fmt.Errorf("zi: postNew failed %q: %w", script, err)
 		}
 	}
 	return nil
+}
+
+func (s *Service) setPostNewStatus(ctx context.Context, path string, status string, message string) error {
+	cached, err := s.cache.Load(ctx)
+	if err != nil {
+		return err
+	}
+	branch := s.git.Branch(ctx, path)
+	entry, ok := cached[path]
+	if !ok {
+		entry = Worktree{
+			Name: filepath.Base(path),
+			Path: path,
+		}
+	}
+	entry.Branch = branch
+	entry.Display = branch
+	entry.PostNewStatus = status
+	entry.PostNewError = message
+	cached[path] = entry
+
+	rows := make([]Worktree, 0, len(cached))
+	for _, row := range cached {
+		rows = append(rows, row)
+	}
+	sortWorktrees(rows)
+	return s.cache.Save(ctx, rows)
 }
 
 func (s *Service) PlanDelete(ctx context.Context, query string, force bool) (DeletePlan, error) {

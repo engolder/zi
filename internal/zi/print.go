@@ -44,6 +44,12 @@ func (p Printer) Row(row Worktree, nameWidth int, branchWidth int, includePath b
 	if row.Ahead > 0 {
 		fmt.Fprintf(p.out, "  %s", ansi("36", "ahead+"+strconv.Itoa(row.Ahead)))
 	}
+	switch row.PostNewStatus {
+	case postNewRunning:
+		fmt.Fprintf(p.out, "  %s", ansi("33", "postNew"))
+	case postNewFailed:
+		fmt.Fprintf(p.out, "  %s", ansi("31;1", "postNew failed"))
+	}
 	if row.PRNumber != 0 {
 		state := row.PRState
 		if state == "" {

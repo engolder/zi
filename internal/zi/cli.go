@@ -44,6 +44,12 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		case "refresh":
 			_, err := c.service.Refresh(ctx)
 			return code(err), err
+		case "__post-new":
+			if len(args) != 2 {
+				return 2, errors.New("zi: __post-new requires a path")
+			}
+			err := c.service.RunPostNew(ctx, args[1])
+			return code(err), err
 		case "prune":
 			if len(args) != 1 {
 				return 2, errors.New("zi: prune does not accept arguments")
@@ -128,11 +134,20 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		if len(rest) > 0 {
 			name = rest[0]
 		}
+		hasPostNew := c.service.HasPostNew(ctx)
 		path, err := c.service.New(ctx, name)
 		if err != nil {
 			return 1, err
 		}
-		c.refreshInBackground(ctx, true)
+		if hasPostNew {
+			if err := c.runPostNewInBackground(ctx, path); err != nil {
+				if err := c.service.RunPostNew(ctx, path); err != nil {
+					return 1, err
+				}
+			}
+		} else {
+			c.refreshInBackground(ctx, true)
+		}
 		fmt.Println(path)
 		return 0, nil
 	case deleteWorktree:
@@ -303,6 +318,14 @@ func (c *CLI) refreshInBackground(ctx context.Context, force bool) {
 		return
 	}
 	_ = cmd.Process.Release()
+}
+
+func (c *CLI) runPostNewInBackground(ctx context.Context, path string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return c.run.Start(ctx, path, exe, "__post-new", path)
 }
 
 func hasHelp(args []string) bool {

@@ -52,7 +52,7 @@ Run project-specific scripts after `zi -n` creates a worktree:
 }
 ```
 
-`postNew` keys are absolute repository root paths. Scripts run from the new worktree with `/bin/sh -c`; a failing script makes `zi -n` fail.
+`postNew` keys are absolute repository root paths. `zi -n` prints the new worktree path immediately and runs scripts from that worktree in the background with `/bin/sh -c`. The cache tracks whether `postNew` is running, done, or failed.
 
 The cache is stored inside the configured worktree root:
 

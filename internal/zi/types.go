@@ -14,6 +14,9 @@ type Worktree struct {
 	Merged   bool   `json:"merged,omitempty"`
 	Dirty    bool   `json:"dirty,omitempty"`
 	Ahead    int    `json:"ahead,omitempty"`
+
+	PostNewStatus string `json:"post_new_status,omitempty"`
+	PostNewError  string `json:"post_new_error,omitempty"`
 }
 
 type PR struct {
