@@ -147,11 +147,140 @@ func TestDeleteWithoutQueryCancelDoesNotDelete(t *testing.T) {
 	}
 }
 
+func TestPlanPruneTargetsOnlyCleanMergedWorktrees(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	config := Config{WorktreeRelativePath: ".claude/worktrees"}
+	service := newTestService(t, repo, config)
+
+	merged, err := service.New(ctx, "merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := service.New(ctx, "dirty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirty, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ahead, err := service.New(ctx, "ahead")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ahead, "ahead.txt"), []byte("ahead\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ahead, "add", "ahead.txt")
+	runGit(t, ahead, "commit", "-m", "ahead")
+	detached, err := service.New(ctx, "detached")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, detached, "checkout", "--detach")
+	current, err := service.New(ctx, "current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.env.Cwd = filepath.Join(current, "nested")
+	if err := os.MkdirAll(service.env.Cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := service.PlanPrune(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Repo != repo {
+		t.Fatalf("PlanPrune() repo = %q, want %q", plan.Repo, repo)
+	}
+	if len(plan.Targets) != 1 {
+		t.Fatalf("PlanPrune() targets = %#v, want exactly one target", plan.Targets)
+	}
+	if plan.Targets[0].Path != merged {
+		t.Fatalf("PlanPrune() target path = %q, want %q", plan.Targets[0].Path, merged)
+	}
+}
+
+func TestPruneDeletesTargets(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	config := Config{WorktreeRelativePath: ".claude/worktrees"}
+	service := newTestService(t, repo, config)
+
+	path, err := service.New(ctx, "merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := service.PlanPrune(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Targets) != 1 {
+		t.Fatalf("PlanPrune() targets = %#v, want one target", plan.Targets)
+	}
+
+	if err := service.Prune(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("pruned worktree stat error = %v, want not exist", err)
+	}
+	if service.git.BranchExists(ctx, repo, "merged") {
+		t.Fatal("branch merged still exists after prune")
+	}
+}
+
+func TestPruneCancelDoesNotDelete(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	config := Config{WorktreeRelativePath: ".claude/worktrees"}
+	setup := newTestService(t, repo, config)
+	path, err := setup.New(ctx, "merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := NewRunner()
+	env := Env{Home: t.TempDir(), Cwd: repo}
+	git := NewGit(env, config, run)
+	service := NewService(env, config, git, NewCache(git), NewPRService(git, run), run)
+	cli := NewCLI(service, run)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cli.print = Printer{out: &stdout, err: &stderr}
+	fzfArgsPath := fakeFzf(t, "cancel")
+
+	code, err := cli.Run(ctx, []string{"--prune"})
+	if code != 1 {
+		t.Fatalf("Run() code = %d, want 1", code)
+	}
+	if err == nil || !strings.Contains(err.Error(), "prune canceled") {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	fzfArgs, err := os.ReadFile(fzfArgsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fzfArgs), "Prune clean merged worktrees?") || !strings.Contains(string(fzfArgs), "merged") {
+		t.Fatalf("fzf args = %q, want confirmation with prune target", string(fzfArgs))
+	}
+	if !strings.Contains(string(fzfArgs), "--stdin--\nprune\ncancel\n") {
+		t.Fatalf("fzf input = %q, want prune before cancel", string(fzfArgs))
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("worktree stat error = %v", err)
+	}
+}
+
 func fakeFzf(t *testing.T, selected string) string {
 	t.Helper()
 	dir := t.TempDir()
 	argsPath := filepath.Join(dir, "args")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + strconv.Quote(argsPath) + "\nprintf '%s\\n' " + strconv.Quote(selected) + "\n"
+	script := "#!/bin/sh\n{\nprintf '%s\\n' \"$@\"\nprintf '%s\\n' --stdin--\ncat\n} > " + strconv.Quote(argsPath) + "\nprintf '%s\\n' " + strconv.Quote(selected) + "\n"
 	path := filepath.Join(dir, "fzf")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

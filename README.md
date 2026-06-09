@@ -12,11 +12,13 @@ zi -l, --list    # list worktrees
 zi -n, --new     # create a worktree
 zi -d, --delete  # delete a clean worktree; with no query, delete the current worktree
 zi -m, --move <query> <name> # move a worktree and rename its branch
+zi --prune       # delete clean merged worktrees after confirmation
 zi -f, --force   # allow deleting dirty worktrees with --delete
 zi -r, --refresh # refresh cache before running
 zi -s, --shell   # print shell integration
 zi -h, --help    # show help
 zi refresh       # refresh cache
+zi prune         # delete clean merged worktrees after confirmation
 zi --shell zsh   # print zsh integration
 ```
 

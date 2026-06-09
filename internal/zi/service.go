@@ -29,6 +29,11 @@ type DeletePlan struct {
 	Confirm  bool
 }
 
+type PrunePlan struct {
+	Repo    string
+	Targets []Worktree
+}
+
 func NewService(env Env, config Config, git *Git, cache *Cache, prs *PRService, run *Runner) *Service {
 	return &Service{env: env, config: config, git: git, cache: cache, prs: prs, run: run}
 }
@@ -254,17 +259,42 @@ func (s *Service) PlanDelete(ctx context.Context, query string, force bool) (Del
 }
 
 func (s *Service) Delete(ctx context.Context, plan DeletePlan) error {
-	trashDir := filepath.Join(plan.Repo, s.config.WorktreeRelativePath, ".zid-deleted")
-	if err := os.MkdirAll(trashDir, 0o755); err != nil {
+	if err := s.deleteWorktrees(ctx, plan.Repo, []Worktree{plan.Target}); err != nil {
 		return err
 	}
-	trashPath := filepath.Join(trashDir, plan.Target.Name+"."+randomSuffix())
-	if err := os.Rename(plan.Target.Path, trashPath); err != nil {
-		return err
-	}
-	s.git.Prune(ctx, plan.Repo)
-	s.git.DeleteBranch(ctx, plan.Repo, plan.Target.Branch)
 	fmt.Fprintf(os.Stderr, "Deleted %s\n", plan.Target.Name)
+	return nil
+}
+
+func (s *Service) PlanPrune(ctx context.Context) (PrunePlan, error) {
+	repo, err := s.git.Repo(ctx)
+	if err != nil {
+		return PrunePlan{}, err
+	}
+	rows, err := s.Refresh(ctx)
+	if err != nil {
+		return PrunePlan{}, err
+	}
+
+	targets := make([]Worktree, 0)
+	for _, row := range rows {
+		if s.pruneable(row) {
+			targets = append(targets, row)
+		}
+	}
+	return PrunePlan{Repo: repo, Targets: targets}, nil
+}
+
+func (s *Service) Prune(ctx context.Context, plan PrunePlan) error {
+	if len(plan.Targets) == 0 {
+		return nil
+	}
+	if err := s.deleteWorktrees(ctx, plan.Repo, plan.Targets); err != nil {
+		return err
+	}
+	for _, target := range plan.Targets {
+		fmt.Fprintf(os.Stderr, "Deleted %s\n", target.Name)
+	}
 	return nil
 }
 
@@ -324,6 +354,37 @@ func (s *Service) Move(ctx context.Context, query string, name string) (string, 
 	}
 	fmt.Fprintf(os.Stderr, "Moved %s to %s\n", target.Name, name)
 	return newPath, nil
+}
+
+func (s *Service) pruneable(row Worktree) bool {
+	return !row.Root &&
+		row.Path != "" &&
+		!inside(s.env.Cwd, row.Path) &&
+		!row.Dirty &&
+		row.Merged &&
+		normalBranch(row.Branch)
+}
+
+func (s *Service) deleteWorktrees(ctx context.Context, repo string, targets []Worktree) error {
+	trashDir := filepath.Join(repo, s.config.WorktreeRelativePath, ".zid-deleted")
+	if err := os.MkdirAll(trashDir, 0o755); err != nil {
+		return err
+	}
+	for _, target := range targets {
+		trashPath := filepath.Join(trashDir, target.Name+"."+randomSuffix())
+		if err := os.Rename(target.Path, trashPath); err != nil {
+			return err
+		}
+	}
+	s.git.Prune(ctx, repo)
+	for _, target := range targets {
+		s.git.DeleteBranch(ctx, repo, target.Branch)
+	}
+	return nil
+}
+
+func normalBranch(branch string) bool {
+	return branch != "" && branch != "-" && !strings.HasPrefix(branch, "detached:")
 }
 
 func sortWorktrees(rows []Worktree) {

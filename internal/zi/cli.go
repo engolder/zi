@@ -44,6 +44,11 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		case "refresh":
 			_, err := c.service.Refresh(ctx)
 			return code(err), err
+		case "prune":
+			if len(args) != 1 {
+				return 2, errors.New("zi: prune does not accept arguments")
+			}
+			return c.prune(ctx)
 		case "shell":
 			shell := "zsh"
 			if len(args) > 1 {
@@ -60,6 +65,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	var newWorktree bool
 	var deleteWorktree bool
 	var moveWorktree bool
+	var prune bool
 	var force bool
 	var refresh bool
 	var shell string
@@ -71,6 +77,7 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	fs.BoolVar(&deleteWorktree, "delete", false, "delete a worktree")
 	fs.BoolVar(&moveWorktree, "m", false, "move a worktree")
 	fs.BoolVar(&moveWorktree, "move", false, "move a worktree")
+	fs.BoolVar(&prune, "prune", false, "delete clean merged worktrees")
 	fs.BoolVar(&force, "f", false, "force delete dirty worktrees")
 	fs.BoolVar(&force, "force", false, "force delete dirty worktrees")
 	fs.BoolVar(&refresh, "r", false, "refresh status and PR cache")
@@ -88,10 +95,13 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	}
 
 	rest := fs.Args()
+	if prune && (list || newWorktree || deleteWorktree || moveWorktree || len(rest) > 0) {
+		return 2, errors.New("zi: --prune does not accept other arguments")
+	}
 	if force && !deleteWorktree {
 		return 2, errors.New("zi: -f/--force is only valid with -d/--delete")
 	}
-	if refresh {
+	if refresh && !prune {
 		if _, err := c.service.Refresh(ctx); err != nil {
 			return 1, err
 		}
@@ -101,6 +111,8 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	}
 
 	switch {
+	case prune:
+		return c.prune(ctx)
 	case list:
 		rows, err := c.service.List(ctx)
 		if err != nil {
@@ -177,6 +189,29 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 	}
 }
 
+func (c *CLI) prune(ctx context.Context) (int, error) {
+	plan, err := c.service.PlanPrune(ctx)
+	if err != nil {
+		return code(err), err
+	}
+	if len(plan.Targets) == 0 {
+		fmt.Fprintln(c.print.err, "No worktrees to prune")
+		return 0, nil
+	}
+	confirmed, err := c.confirmPrune(ctx, plan.Targets)
+	if err != nil {
+		return 1, err
+	}
+	if !confirmed {
+		return 1, errors.New("zi: prune canceled")
+	}
+	err = c.service.Prune(ctx, plan)
+	if err == nil {
+		c.refreshInBackground(ctx, true)
+	}
+	return code(err), err
+}
+
 func (c *CLI) confirmDelete(ctx context.Context, target Worktree) (bool, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
 		return false, errors.New("zi: fzf not found")
@@ -194,6 +229,25 @@ func (c *CLI) confirmDelete(ctx context.Context, target Worktree) (bool, error) 
 		return false, nil
 	}
 	return selected == "delete", nil
+}
+
+func (c *CLI) confirmPrune(ctx context.Context, targets []Worktree) (bool, error) {
+	if _, err := exec.LookPath("fzf"); err != nil {
+		return false, errors.New("zi: fzf not found")
+	}
+	var status strings.Builder
+	statusPrinter := c.print
+	statusPrinter.out = &status
+	statusPrinter.List(targets, false)
+	header := "Prune clean merged worktrees?\n" + strings.TrimRight(status.String(), "\n")
+	selected, err := c.run.RunInput(ctx, "prune\ncancel\n", "", "fzf", "--ansi", "--height", "40%", "--layout=reverse", "--prompt=confirm> ", "--header="+header)
+	if err != nil && selected != "" {
+		return false, err
+	}
+	if selected == "" {
+		return false, nil
+	}
+	return selected == "prune", nil
 }
 
 func (c *CLI) pick(ctx context.Context, query string) (string, error) {
@@ -277,6 +331,7 @@ func usage() {
                      delete a worktree
   zi -m, --move <query> <name>
                      move a worktree and rename its branch
+  zi --prune         delete clean merged worktrees after confirmation
   zi -f, --force      allow deleting dirty worktrees with --delete
   zi -r, --refresh    refresh status/PR cache before running
   zi -s, --shell zsh  print shell integration
@@ -284,6 +339,7 @@ func usage() {
 
 Commands:
   zi refresh          refresh status/PR cache
+  zi prune            delete clean merged worktrees after confirmation
   zi shell [zsh]      print shell integration
 
 `)
