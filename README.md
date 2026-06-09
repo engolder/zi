@@ -26,7 +26,8 @@ Default config:
 
 ```json
 {
-  "worktreeRelativePath": ".claude/worktree"
+  "worktreeRelativePath": ".claude/worktree",
+  "postNew": {}
 }
 ```
 
@@ -37,6 +38,19 @@ Config file path:
 ```
 
 `ZI_WORKTREE_RELATIVE_PATH` overrides the config file for one command.
+
+Run project-specific scripts after `zi -n` creates a worktree:
+
+```json
+{
+  "worktreeRelativePath": ".claude/worktree",
+  "postNew": {
+    "/absolute/path/to/repo": ["yarn install"]
+  }
+}
+```
+
+`postNew` keys are absolute repository root paths. Scripts run from the new worktree with `/bin/sh -c`; a failing script makes `zi -n` fail.
 
 The cache is stored inside the configured worktree root:
 

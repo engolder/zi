@@ -21,7 +21,7 @@ func main() {
 	git := zi.NewGit(env, config, runner)
 	cache := zi.NewCache(git)
 	prs := zi.NewPRService(git, runner)
-	service := zi.NewService(env, config, git, cache, prs)
+	service := zi.NewService(env, config, git, cache, prs, runner)
 	cli := zi.NewCLI(service, runner)
 
 	code, err := cli.Run(context.Background(), os.Args[1:])

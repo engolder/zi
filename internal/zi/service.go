@@ -19,10 +19,11 @@ type Service struct {
 	git    *Git
 	cache  *Cache
 	prs    *PRService
+	run    *Runner
 }
 
-func NewService(env Env, config Config, git *Git, cache *Cache, prs *PRService) *Service {
-	return &Service{env: env, config: config, git: git, cache: cache, prs: prs}
+func NewService(env Env, config Config, git *Git, cache *Cache, prs *PRService, run *Runner) *Service {
+	return &Service{env: env, config: config, git: git, cache: cache, prs: prs, run: run}
 }
 
 func (s *Service) List(ctx context.Context) ([]Worktree, error) {
@@ -177,7 +178,20 @@ func (s *Service) New(ctx context.Context, name string) (string, error) {
 	if err := s.git.AddWorktree(ctx, repo, path, name); err != nil {
 		return "", err
 	}
+	if err := s.runPostNew(ctx, repo, path); err != nil {
+		return "", err
+	}
 	return path, nil
+}
+
+func (s *Service) runPostNew(ctx context.Context, repo string, path string) error {
+	for _, script := range s.config.PostNewScripts(repo) {
+		fmt.Fprintf(os.Stderr, "Running postNew: %s\n", script)
+		if err := s.run.Run(ctx, path, "sh", "-c", script); err != nil {
+			return fmt.Errorf("zi: postNew failed %q: %w", script, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) Delete(ctx context.Context, query string, force bool) error {

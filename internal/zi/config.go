@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -13,7 +14,8 @@ const (
 )
 
 type Config struct {
-	WorktreeRelativePath string `json:"worktreeRelativePath"`
+	WorktreeRelativePath string              `json:"worktreeRelativePath"`
+	PostNew              map[string][]string `json:"postNew,omitempty"`
 }
 
 func NewConfig(env Env) (Config, error) {
@@ -36,5 +38,32 @@ func NewConfig(env Env) (Config, error) {
 	if filepath.IsAbs(config.WorktreeRelativePath) || config.WorktreeRelativePath == "." {
 		return Config{}, fmt.Errorf("zi: worktreeRelativePath must be a relative path: %s", config.WorktreeRelativePath)
 	}
+	postNew := make(map[string][]string, len(config.PostNew))
+	for repo, scripts := range config.PostNew {
+		repo = filepath.Clean(repo)
+		if !filepath.IsAbs(repo) {
+			return Config{}, fmt.Errorf("zi: postNew repository path must be absolute: %s", repo)
+		}
+		repo = cleanRepoPath(repo)
+		for _, script := range scripts {
+			if strings.TrimSpace(script) == "" {
+				return Config{}, fmt.Errorf("zi: postNew script must not be empty: %s", repo)
+			}
+		}
+		postNew[repo] = scripts
+	}
+	config.PostNew = postNew
 	return config, nil
+}
+
+func (c Config) PostNewScripts(repo string) []string {
+	return c.PostNew[cleanRepoPath(repo)]
+}
+
+func cleanRepoPath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
