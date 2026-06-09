@@ -239,7 +239,7 @@ func (s *Service) PlanDelete(ctx context.Context, query string, force bool) (Del
 	if target.Root {
 		return DeletePlan{}, fmt.Errorf("zi: cannot delete repository root: %s", target.Path)
 	}
-	if s.git.Dirty(ctx, target.Path) && !force {
+	if query != "" && s.git.Dirty(ctx, target.Path) && !force {
 		return DeletePlan{}, fmt.Errorf("zi: worktree has dirty changes: %s", target.Path)
 	}
 	if inside(s.env.Cwd, target.Path) && query != "" {

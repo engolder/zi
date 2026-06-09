@@ -58,6 +58,9 @@ func TestPlanDeleteWithoutQueryTargetsCurrentWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(path, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	service.env.Cwd = filepath.Join(path, "nested")
 	if err := os.MkdirAll(service.env.Cwd, 0o755); err != nil {
 		t.Fatal(err)
@@ -75,6 +78,9 @@ func TestPlanDeleteWithoutQueryTargetsCurrentWorktree(t *testing.T) {
 	}
 	if plan.Target.Path != path {
 		t.Fatalf("PlanDelete() target path = %q, want %q", plan.Target.Path, path)
+	}
+	if !plan.Target.Dirty {
+		t.Fatal("PlanDelete() target Dirty = false")
 	}
 
 	if err := service.Delete(ctx, plan); err != nil {
@@ -104,6 +110,9 @@ func TestDeleteWithoutQueryCancelDoesNotDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(path, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	run := NewRunner()
 	env := Env{Home: t.TempDir(), Cwd: path}
@@ -125,7 +134,7 @@ func TestDeleteWithoutQueryCancelDoesNotDelete(t *testing.T) {
 	if stdout.String() != "" {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Delete worktree?") || !strings.Contains(stderr.String(), "feature") {
+	if !strings.Contains(stderr.String(), "Delete worktree?") || !strings.Contains(stderr.String(), "feature") || !strings.Contains(stderr.String(), "dirty") {
 		t.Fatalf("stderr = %q, want confirmation with target", stderr.String())
 	}
 	if _, err := os.Stat(path); err != nil {
