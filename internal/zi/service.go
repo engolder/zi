@@ -398,9 +398,6 @@ func (s *Service) Prune(ctx context.Context, plan PrunePlan) error {
 }
 
 func (s *Service) Move(ctx context.Context, query string, name string) (string, error) {
-	if query == "" {
-		return "", errors.New("zi: -m requires a query")
-	}
 	if name == "" {
 		return "", errors.New("zi: -m requires a name")
 	}
@@ -411,23 +408,38 @@ func (s *Service) Move(ctx context.Context, query string, name string) (string, 
 	if err != nil {
 		return "", err
 	}
-	matches, err := s.Match(ctx, query)
-	if err != nil {
-		return "", err
-	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("zi: no matching worktree: %s", query)
-	}
-	if len(matches) > 1 {
-		return "", fmt.Errorf("zi: multiple matching worktrees: %s", query)
+
+	var target Worktree
+	if query == "" {
+		rows, err := s.List(ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, row := range rows {
+			if !row.Root && inside(s.env.Cwd, row.Path) {
+				target = row
+				break
+			}
+		}
+		if target.Path == "" {
+			return "", errors.New("zi: -m with no query must run inside a worktree")
+		}
+	} else {
+		matches, err := s.Match(ctx, query)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return "", fmt.Errorf("zi: no matching worktree: %s", query)
+		}
+		if len(matches) > 1 {
+			return "", fmt.Errorf("zi: multiple matching worktrees: %s", query)
+		}
+		target = matches[0]
 	}
 
-	target := matches[0]
 	if target.Root {
 		return "", fmt.Errorf("zi: cannot move repository root: %s", target.Path)
-	}
-	if inside(s.env.Cwd, target.Path) {
-		return "", fmt.Errorf("zi: cannot move current worktree from inside it: %s", target.Path)
 	}
 	if target.Branch == "" || target.Branch == "-" || strings.HasPrefix(target.Branch, "detached:") {
 		return "", fmt.Errorf("zi: cannot move detached worktree: %s", target.Name)
@@ -508,7 +520,7 @@ func randomSuffix() string {
 }
 
 func inside(path string, root string) bool {
-	path = filepath.Clean(path)
-	root = filepath.Clean(root)
+	path = cleanRepoPath(path)
+	root = cleanRepoPath(root)
 	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }

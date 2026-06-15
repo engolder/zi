@@ -177,10 +177,11 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		}
 		return code(err), err
 	case moveWorktree:
-		if len(rest) != 2 {
-			return 2, errors.New("zi: -m/--move requires a query and name")
+		query, name, err := moveArgs(rest)
+		if err != nil {
+			return 2, err
 		}
-		path, err := c.service.Move(ctx, rest[0], rest[1])
+		path, err := c.service.Move(ctx, query, name)
 		if err != nil {
 			return 1, err
 		}
@@ -201,6 +202,17 @@ func (c *CLI) Run(ctx context.Context, args []string) (int, error) {
 		}
 		fmt.Println(path)
 		return 0, nil
+	}
+}
+
+func moveArgs(args []string) (string, string, error) {
+	switch len(args) {
+	case 1:
+		return "", args[0], nil
+	case 2:
+		return args[0], args[1], nil
+	default:
+		return "", "", errors.New("zi: -m/--move requires a name or query and name")
 	}
 }
 
@@ -352,7 +364,7 @@ func usage() {
   zi -n, --new [name] create a worktree and print its path
   zi -d, --delete [query]
                      delete a worktree
-  zi -m, --move <query> <name>
+  zi -m, --move [query] <name>
                      move a worktree and rename its branch
   zi --prune         delete clean merged worktrees after confirmation
   zi -f, --force      allow deleting dirty worktrees with --delete

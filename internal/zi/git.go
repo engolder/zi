@@ -29,15 +29,16 @@ func NewGit(env Env, config Config, run *Runner) *Git {
 func (g *Git) Repo(ctx context.Context) (string, error) {
 	root, err := g.worktreeRootFromPath(g.env.Cwd)
 	if err == nil {
-		return strings.TrimSuffix(root, string(filepath.Separator)+g.config.WorktreeRelativePath), nil
+		repo := strings.TrimSuffix(root, string(filepath.Separator)+g.config.WorktreeRelativePath)
+		return cleanRepoPath(repo), nil
 	}
 
 	top, err := g.run.Output(ctx, g.env.Cwd, "git", "rev-parse", "--show-toplevel")
 	if err == nil && top != "" {
 		if before, ok := g.splitAtWorktreeRoot(top); ok {
-			return before, nil
+			return cleanRepoPath(before), nil
 		}
-		return top, nil
+		return cleanRepoPath(top), nil
 	}
 
 	return "", errors.New("zi: not inside a worktree repository")

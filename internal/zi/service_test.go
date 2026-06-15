@@ -374,6 +374,107 @@ func TestPruneCancelDoesNotDelete(t *testing.T) {
 	}
 }
 
+func TestMoveArgsAllowsOmittingCurrentQuery(t *testing.T) {
+	query, name, err := moveArgs([]string{"renamed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query != "" || name != "renamed" {
+		t.Fatalf("moveArgs() = %q, %q, want empty query and renamed", query, name)
+	}
+
+	query, name, err = moveArgs([]string{"feature", "renamed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query != "feature" || name != "renamed" {
+		t.Fatalf("moveArgs() = %q, %q, want feature and renamed", query, name)
+	}
+}
+
+func TestMoveWithoutQueryTargetsCurrentWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	config := Config{WorktreeRelativePath: ".claude/worktrees"}
+	service := newTestService(t, repo, config)
+
+	oldPath, err := service.New(ctx, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.env.Cwd = filepath.Join(oldPath, "nested")
+	if err := os.MkdirAll(service.env.Cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	newPath, err := service.Move(ctx, "", "renamed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(repo, ".claude/worktrees", "renamed")
+	if newPath != wantPath {
+		t.Fatalf("Move() path = %q, want %q", newPath, wantPath)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old worktree stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new worktree stat error = %v", err)
+	}
+	if branch := service.git.Branch(ctx, newPath); branch != "renamed" {
+		t.Fatalf("branch = %q, want renamed", branch)
+	}
+	if service.git.BranchExists(ctx, repo, "feature") {
+		t.Fatal("old branch still exists after move")
+	}
+}
+
+func TestMoveWithQueryAllowsCurrentWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	config := Config{WorktreeRelativePath: ".claude/worktrees"}
+	service := newTestService(t, repo, config)
+
+	oldPath, err := service.New(ctx, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.env.Cwd = filepath.Join(oldPath, "nested")
+	if err := os.MkdirAll(service.env.Cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	newPath, err := service.Move(ctx, "feature", "renamed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(repo, ".claude/worktrees", "renamed")
+	if newPath != wantPath {
+		t.Fatalf("Move() path = %q, want %q", newPath, wantPath)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old worktree stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new worktree stat error = %v", err)
+	}
+}
+
+func TestInsideResolvesSymlinks(t *testing.T) {
+	realRoot := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(filepath.Join(realRoot, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	if !inside(filepath.Join(linkRoot, "nested"), realRoot) {
+		t.Fatal("inside() = false, want true for symlinked path")
+	}
+}
+
 func fakeFzf(t *testing.T, selected string) string {
 	t.Helper()
 	dir := t.TempDir()
